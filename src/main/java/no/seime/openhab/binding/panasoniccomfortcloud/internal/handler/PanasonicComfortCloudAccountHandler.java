@@ -80,8 +80,9 @@ public class PanasonicComfortCloudAccountHandler extends BaseBridgeHandler {
 
     @Override
     public void initialize() {
-        // Stop any pending updates if any
-        stopScheduledUpdate();
+        // Stop any pending updates if any. When called as a scheduled retry the future is the one currently running
+        // this method, so it must not be interrupted - the interrupt flag would make every following HTTP call fail
+        stopScheduledUpdate(false);
 
         updateStatus(ThingStatus.UNKNOWN);
         AccountConfiguration loadedConfig = getConfigAs(AccountConfiguration.class);
@@ -99,7 +100,7 @@ public class PanasonicComfortCloudAccountHandler extends BaseBridgeHandler {
 
     @Override
     public void dispose() {
-        stopScheduledUpdate();
+        stopScheduledUpdate(true);
         super.dispose();
     }
 
@@ -174,13 +175,13 @@ public class PanasonicComfortCloudAccountHandler extends BaseBridgeHandler {
             }
         } catch (final ConfigurationException e) {
             logger.info("Error initializing Panasonic Comfort Cloud data: {}", e.getMessage());
-            stopScheduledUpdate();
+            stopScheduledUpdate(false);
             model.clear();
             updateStatus(ThingStatus.OFFLINE, ThingStatusDetail.CONFIGURATION_ERROR,
                     "Error fetching data: " + e.getMessage());
         } catch (final PanasonicComfortCloudException e) {
             logger.info("Error initializing data: {}", e.getMessage());
-            stopScheduledUpdate();
+            stopScheduledUpdate(false);
             model.clear();
 
             errorCounter++;
@@ -205,10 +206,10 @@ public class PanasonicComfortCloudAccountHandler extends BaseBridgeHandler {
     /**
      * Stops this thing's polling future
      */
-    private void stopScheduledUpdate() {
+    private void stopScheduledUpdate(boolean mayInterruptIfRunning) {
         statusFuture.ifPresent(future -> {
             if (!future.isCancelled()) {
-                future.cancel(true);
+                future.cancel(mayInterruptIfRunning);
             }
             statusFuture = Optional.empty();
         });
