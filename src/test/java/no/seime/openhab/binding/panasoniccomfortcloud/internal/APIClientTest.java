@@ -58,6 +58,30 @@ public class APIClientTest {
     }
 
     @Test
+    public void testCompareVersions() {
+        assertTrue(ApiBridge.compareVersions("4.4.0", "4.3.0") > 0);
+        assertTrue(ApiBridge.compareVersions("4.10.0", "4.9.1") > 0);
+        assertTrue(ApiBridge.compareVersions("4.3", "4.3.1") < 0);
+        assertEquals(0, ApiBridge.compareVersions("4.3.0", "4.3"));
+        assertEquals(0, ApiBridge.compareVersions(" 4.4.0 ", "4.4.0"));
+    }
+
+    @Test
+    public void testNewestVersion() {
+        assertEquals("4.4.0", ApiBridge.newestVersion(null, "4.4.0"));
+        assertEquals("4.5.0", ApiBridge.newestVersion("4.5.0", "4.4.0"));
+        assertEquals("4.4.0", ApiBridge.newestVersion("4.3.0", "4.4.0"));
+    }
+
+    @Test
+    public void testUpdateAppVersionSkipsLookupWhenAlreadySwitched() {
+        ApiBridge apiBridge = new ApiBridge(storage);
+        apiBridge.init("user", "password", "4.5.0");
+        // A concurrent request already moved away from the rejected version - retry without asking the App Store
+        assertTrue(apiBridge.updateAppVersionFromAppStore("4.3.0"));
+    }
+
+    @Test
     public void testGetAppVersionIntegration() {
         ApiBridge apiBridge = new ApiBridge(storage);
         String appVersion = apiBridge.getAppVersion();

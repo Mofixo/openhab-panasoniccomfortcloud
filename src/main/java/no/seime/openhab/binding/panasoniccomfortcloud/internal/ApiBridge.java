@@ -61,6 +61,7 @@ public class ApiBridge {
     private static final String ITUNES_APP_VERSION_URL = "https://itunes.apple.com/lookup?id=1348640525";
     private static final String DEFAULT_APP_VERSION = "4.3.0";
 
+    private static final String APP_VERSION_KEY = "appVersion";
     private static final String ACCESS_TOKEN_KEY = "accessToken";
     private static final String REFRESH_TOKEN_KEY = "refreshToken";
     private static final String CLIENT_ID_KEY = "clientId";
@@ -75,7 +76,7 @@ public class ApiBridge {
     private String clientId;
     private String username;
     private String password;
-    private String appVersion;
+    private volatile String appVersion;
     private Gson gson;
     private OkHttpClient client;
     private Storage<String> storage;
@@ -175,10 +176,12 @@ public class ApiBridge {
             logger.debug("No configured appVersion in thing configuration, trying to fetch from iTunes lookup");
             appVersion = getAppVersion();
             if (appVersion == null) {
+                // The last version the API accepted is a better guess than the compiled-in default
+                String fallbackAppVersion = newestVersion(storage.get(APP_VERSION_KEY), DEFAULT_APP_VERSION);
                 logger.info(
-                        "Could not fetch appVersion dynamically, and no value is provided on the bridge thing. Defaulting to  {}",
-                        DEFAULT_APP_VERSION);
-                appVersion = DEFAULT_APP_VERSION;
+                        "Could not fetch appVersion dynamically, and no value is provided on the bridge thing. Defaulting to {}",
+                        fallbackAppVersion);
+                appVersion = fallbackAppVersion;
             } else {
                 logger.debug("Fetched appVersion from iTunes lookup: {}", appVersion);
             }
@@ -211,6 +214,19 @@ public class ApiBridge {
     }
 
     public <T> T sendRequest(final AbstractRequest req, final Type responseType) throws PanasonicComfortCloudException {
+        try {
+            return sendRequestOnce(req, responseType);
+        } catch (AppVersionOutdatedException e) {
+            // Panasonic raises the minimum app version from time to time - look up the current one and try again
+            if (!updateAppVersionFromAppStore(e.getRejectedAppVersion())) {
+                throw e;
+            }
+            return sendRequestOnce(req, responseType);
+        }
+    }
+
+    private <T> T sendRequestOnce(final AbstractRequest req, final Type responseType)
+            throws PanasonicComfortCloudException {
 
         Token token = getStoredToken();
         if (token == null || token.isExpired()) {
@@ -227,7 +243,66 @@ public class ApiBridge {
             }
         }
 
-        return sendRequestInternal(buildRequest(token, req), req, responseType);
+        T response = sendRequestInternal(buildRequest(token, req), req, responseType);
+        rememberAppVersion();
+        return response;
+    }
+
+    /**
+     * Switches to the app version currently published in the App Store if it is newer than the rejected one.
+     *
+     * @return true if a request should be retried with the (possibly concurrently) updated app version
+     */
+    synchronized boolean updateAppVersionFromAppStore(String rejectedAppVersion) {
+        if (!rejectedAppVersion.equals(appVersion)) {
+            // Another request already switched to a newer version
+            return true;
+        }
+        String publishedAppVersion = getAppVersion();
+        if (publishedAppVersion == null || compareVersions(publishedAppVersion, rejectedAppVersion) <= 0) {
+            logger.warn("API rejected appVersion {} and the App Store offers no newer version (found {})",
+                    rejectedAppVersion, publishedAppVersion);
+            return false;
+        }
+        logger.info("API rejected appVersion {}, switching to {} from the App Store", rejectedAppVersion,
+                publishedAppVersion);
+        appVersion = publishedAppVersion;
+        return true;
+    }
+
+    private void rememberAppVersion() {
+        String currentAppVersion = appVersion;
+        if (!currentAppVersion.equals(storage.get(APP_VERSION_KEY))) {
+            storage.put(APP_VERSION_KEY, currentAppVersion);
+        }
+    }
+
+    static String newestVersion(@Nullable String a, String b) {
+        if (a == null) {
+            return b;
+        }
+        return compareVersions(a, b) >= 0 ? a : b;
+    }
+
+    static int compareVersions(String a, String b) {
+        String[] partsA = a.trim().split("\\.");
+        String[] partsB = b.trim().split("\\.");
+        for (int i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+            int partA = i < partsA.length ? parseVersionPart(partsA[i]) : 0;
+            int partB = i < partsB.length ? parseVersionPart(partsB[i]) : 0;
+            if (partA != partB) {
+                return Integer.compare(partA, partB);
+            }
+        }
+        return 0;
+    }
+
+    private static int parseVersionPart(String part) {
+        try {
+            return Integer.parseInt(part.replaceAll("\\D.*$", ""));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     private @NonNull Token getNewToken() throws CommunicationException {
@@ -235,6 +310,9 @@ public class ApiBridge {
             Token token = doV2AuthorizationFlow();
             storeToken(token);
             return token;
+        } catch (AppVersionOutdatedException e) {
+            clearToken();
+            throw e;
         } catch (Exception e) {
             clearToken();
             throw new CommunicationException("Error obtaining access token - check credentials and appVersion", e);
@@ -415,9 +493,7 @@ public class ApiBridge {
             String errorMessage = o.has("message") ? o.get("message").getAsString() : "<not provided>";
 
             if (errorCode == ERROR_CODE_UPDATE_VERSION) {
-                throw new CommunicationException(String.format(
-                        "New app version published - check the version number of your mobile app and enter the value as account config parameter (currently using %s)",
-                        appVersion));
+                throw new AppVersionOutdatedException(appVersion);
             } else {
                 throw new CommunicationException("Get clientId request failed with code " + getAccClientResponse.code()
                         + " and message " + errorMessage + ". Check credentials and appVersion");
@@ -513,9 +589,7 @@ public class ApiBridge {
                 String errorMessage = o.has("message") ? o.get("message").getAsString() : "<not provided>";
 
                 if (errorCode == ERROR_CODE_UPDATE_VERSION) {
-                    throw new CommunicationException(String.format(
-                            "New app version published - check the version number of your mobile app and enter the value as account config parameter (currently using %s)",
-                            appVersion));
+                    throw new AppVersionOutdatedException(appVersion);
                 } else {
                     throw new CommunicationException(
                             String.format("Request failed: code %d, message %s", errorCode, errorMessage));
@@ -524,6 +598,8 @@ public class ApiBridge {
                 throw new CommunicationException("Error sending request to server. Server responded with "
                         + response.code() + " and payload " + response.body().string());
             }
+        } catch (AppVersionOutdatedException e) {
+            throw e;
         } catch (Exception e) {
             throw new CommunicationException("General error communicating with service: " + e);
         }
