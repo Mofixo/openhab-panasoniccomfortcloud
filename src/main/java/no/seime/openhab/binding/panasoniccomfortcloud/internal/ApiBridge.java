@@ -270,6 +270,15 @@ public class ApiBridge {
         return true;
     }
 
+    /**
+     * The version a rejected request was actually sent with. The shared appVersion field may already have been
+     * switched by a concurrent request, which would make the rejected version look current and skip the retry.
+     */
+    String sentAppVersion(Request request) {
+        String sent = request.header("x-app-version");
+        return sent != null ? sent : appVersion;
+    }
+
     private void rememberAppVersion() {
         String currentAppVersion = appVersion;
         if (!currentAppVersion.equals(storage.get(APP_VERSION_KEY))) {
@@ -493,7 +502,7 @@ public class ApiBridge {
             String errorMessage = o.has("message") ? o.get("message").getAsString() : "<not provided>";
 
             if (errorCode == ERROR_CODE_UPDATE_VERSION) {
-                throw new AppVersionOutdatedException(appVersion);
+                throw new AppVersionOutdatedException(sentAppVersion(getAccClientIdRequest));
             } else {
                 throw new CommunicationException("Get clientId request failed with code " + getAccClientResponse.code()
                         + " and message " + errorMessage + ". Check credentials and appVersion");
@@ -589,7 +598,7 @@ public class ApiBridge {
                 String errorMessage = o.has("message") ? o.get("message").getAsString() : "<not provided>";
 
                 if (errorCode == ERROR_CODE_UPDATE_VERSION) {
-                    throw new AppVersionOutdatedException(appVersion);
+                    throw new AppVersionOutdatedException(sentAppVersion(request));
                 } else {
                     throw new CommunicationException(
                             String.format("Request failed: code %d, message %s", errorCode, errorMessage));

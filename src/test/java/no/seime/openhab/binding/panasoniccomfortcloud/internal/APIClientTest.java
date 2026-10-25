@@ -16,6 +16,7 @@ import com.google.gson.reflect.TypeToken;
 
 import no.seime.openhab.binding.panasoniccomfortcloud.internal.dto.GetGroupsRequest;
 import no.seime.openhab.binding.panasoniccomfortcloud.internal.dto.GetGroupsResponse;
+import okhttp3.Request;
 
 @ExtendWith(MockitoExtension.class)
 public class APIClientTest {
@@ -79,6 +80,20 @@ public class APIClientTest {
         apiBridge.init("user", "password", "4.5.0");
         // A concurrent request already moved away from the rejected version - retry without asking the App Store
         assertTrue(apiBridge.updateAppVersionFromAppStore("4.3.0"));
+    }
+
+    @Test
+    public void testRejectedVersionIsTakenFromRequestNotFromSharedField() {
+        ApiBridge apiBridge = new ApiBridge(storage);
+        // A concurrent request has already switched the shared field to 4.4.0 ...
+        apiBridge.init("user", "password", "4.4.0");
+        // ... while this request was still in flight with 4.3.0 and gets 4106 back
+        Request inFlight = new Request.Builder().url("https://accsmart.panasonic.com/device/group")
+                .addHeader("x-app-version", "4.3.0").build();
+        String rejected = apiBridge.sentAppVersion(inFlight);
+        assertEquals("4.3.0", rejected);
+        // So the request is retried with 4.4.0 instead of failing
+        assertTrue(apiBridge.updateAppVersionFromAppStore(rejected));
     }
 
     @Test
