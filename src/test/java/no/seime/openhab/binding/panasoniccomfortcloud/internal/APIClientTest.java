@@ -97,6 +97,33 @@ public class APIClientTest {
     }
 
     @Test
+    public void testFallsBackToLastAcceptedVersionWhenAppStoreIsAhead() {
+        // Seen on 2026-10-25: the App Store had 5.1.1 (iOS only), the API rejected it; 5.1.0 had been accepted before
+        storage.put("appVersion", "5.1.0");
+        ApiBridge apiBridge = new ApiBridge(storage);
+        apiBridge.init("user", "password", "5.1.1");
+        assertTrue(apiBridge.switchAfterRejection("5.1.1", "5.1.1"));
+        assertEquals("5.1.0", apiBridge.currentAppVersion());
+    }
+
+    @Test
+    public void testPrefersNewerAppStoreVersionOverLastAccepted() {
+        storage.put("appVersion", "4.3.0");
+        ApiBridge apiBridge = new ApiBridge(storage);
+        apiBridge.init("user", "password", "4.4.0");
+        assertTrue(apiBridge.switchAfterRejection("4.4.0", "5.1.1"));
+        assertEquals("5.1.1", apiBridge.currentAppVersion());
+    }
+
+    @Test
+    public void testGivesUpWhenNoAlternativeVersionIsKnown() {
+        ApiBridge apiBridge = new ApiBridge(storage);
+        apiBridge.init("user", "password", "5.1.1");
+        assertFalse(apiBridge.switchAfterRejection("5.1.1", "5.1.1"));
+        assertEquals("5.1.1", apiBridge.currentAppVersion());
+    }
+
+    @Test
     public void testGetAppVersionIntegration() {
         ApiBridge apiBridge = new ApiBridge(storage);
         String appVersion = apiBridge.getAppVersion();

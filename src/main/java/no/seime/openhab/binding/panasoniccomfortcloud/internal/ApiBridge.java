@@ -249,25 +249,41 @@ public class ApiBridge {
     }
 
     /**
-     * Switches to the app version currently published in the App Store if it is newer than the rejected one.
+     * Picks another app version after the API rejected one: the version currently published in the App Store if it
+     * is newer, otherwise the last version the API accepted.
      *
      * @return true if a request should be retried with the (possibly concurrently) updated app version
      */
     synchronized boolean updateAppVersionFromAppStore(String rejectedAppVersion) {
         if (!rejectedAppVersion.equals(appVersion)) {
-            // Another request already switched to a newer version
+            // Another request already switched to a different version
             return true;
         }
-        String publishedAppVersion = getAppVersion();
-        if (publishedAppVersion == null || compareVersions(publishedAppVersion, rejectedAppVersion) <= 0) {
-            logger.warn("API rejected appVersion {} and the App Store offers no newer version (found {})",
-                    rejectedAppVersion, publishedAppVersion);
-            return false;
+        return switchAfterRejection(rejectedAppVersion, getAppVersion());
+    }
+
+    synchronized boolean switchAfterRejection(String rejectedAppVersion, @Nullable String publishedAppVersion) {
+        if (publishedAppVersion != null && compareVersions(publishedAppVersion, rejectedAppVersion) > 0) {
+            logger.info("API rejected appVersion {}, switching to {} from the App Store", rejectedAppVersion,
+                    publishedAppVersion);
+            appVersion = publishedAppVersion;
+            return true;
         }
-        logger.info("API rejected appVersion {}, switching to {} from the App Store", rejectedAppVersion,
-                publishedAppVersion);
-        appVersion = publishedAppVersion;
-        return true;
+        // The App Store can be ahead of what the API accepts, e.g. an iOS release before the matching Android one
+        String lastAcceptedAppVersion = storage.get(APP_VERSION_KEY);
+        if (lastAcceptedAppVersion != null && !lastAcceptedAppVersion.equals(rejectedAppVersion)) {
+            logger.info("API rejected appVersion {} (App Store has {}), falling back to last accepted version {}",
+                    rejectedAppVersion, publishedAppVersion, lastAcceptedAppVersion);
+            appVersion = lastAcceptedAppVersion;
+            return true;
+        }
+        logger.warn("API rejected appVersion {}, and neither the App Store ({}) nor the last accepted version ({}) "
+                + "offers an alternative", rejectedAppVersion, publishedAppVersion, lastAcceptedAppVersion);
+        return false;
+    }
+
+    String currentAppVersion() {
+        return appVersion;
     }
 
     /**
